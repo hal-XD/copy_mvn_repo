@@ -1,4 +1,6 @@
 
+use std::error::Error;
+use std::fmt::Display;
 use std::path::PathBuf;
 use std::fs;
 use std::io::{self, BufRead};
@@ -7,9 +9,21 @@ use std::io::{self, BufRead};
 extern crate lazy_static;
 use regex::Regex;
 use clap::Parser;
+use anyhow::{Result, anyhow, Ok};
+use thiserror::Error;
 
 lazy_static! {
     static ref RE: Regex = Regex::new(r"[^\s]+:jar:[^\s]+:").unwrap();
+}
+
+#[derive(Debug, Error)]
+enum MyError {
+    #[error("does not match regex. line=[{}]", .l)]
+    NoMatchRegex {l: String},
+    #[error("does not match regex. line=[{}]", .l)]
+    NoContaineJarPath { l: String},
+    #[error("does not match regex. line=[{}]", .l)]
+    InvalidFormatLine {l: String},
 }
 
 #[derive(Parser, Debug)]
@@ -26,11 +40,10 @@ struct Args {
 }
 
 /// jar fileへのパスを返す
-fn parse(m2_repo_path: &PathBuf,line: String) -> Result<PathBuf, String> {
+fn parse(m2_repo_path: &PathBuf,line: String) -> Result<PathBuf> {
     let mut path = PathBuf::from(m2_repo_path);
     if !line.contains("jar") {
-        let msg = format!("{line} does not contain jar path.");
-        return Err(msg)
+        return Err(MyError::NoContaineJarPath{l: line}.into())
     }
     if let Some(s) = RE
             .find(
@@ -44,7 +57,7 @@ fn parse(m2_repo_path: &PathBuf,line: String) -> Result<PathBuf, String> {
         // m2_repo_path/group/artifact/version/artifact-version.jar
         let p: Vec<&str> = s.split(":").collect();
         if p.len() != 5 {
-            return Err(format!("{line} is invalid format line."));
+            return Err(MyError::InvalidFormatLine {l: line}.into());
         }
         let group = p[0].replace(".", "/");
         let artifact = p[1];
@@ -55,10 +68,10 @@ fn parse(m2_repo_path: &PathBuf,line: String) -> Result<PathBuf, String> {
         path.push(format!("{artifact}-{version}.jar"));
         return Ok(path)
     }
-    Err(format!("{line} does not match regex pattern"))
+    Err(MyError::NoMatchRegex{l:line}.into())
 }
 
-fn _copy_jar(jars: Vec<PathBuf>, target_dir: PathBuf) -> io::Result<()>{
+fn _copy_jar(jars: Vec<PathBuf>, target_dir: PathBuf) -> Result<()>{
     for jar_path in jars {
         if jar_path.exists() && jar_path.is_file() {
             let mut dest = target_dir.clone();
@@ -75,24 +88,23 @@ fn _copy_jar(jars: Vec<PathBuf>, target_dir: PathBuf) -> io::Result<()>{
     Ok(())
 }
 
-fn copy_jar_to_target_dir(m2_repo_path: PathBuf,repo_file:PathBuf, target_dir:PathBuf) -> io::Result<()>{
+fn copy_jar_to_target_dir(m2_repo_path: PathBuf,repo_file:PathBuf, target_dir:PathBuf)
+    -> Result<()>
+{
     let mut jars = Vec::<PathBuf>::new();
     { // open file
         let file = fs::File::open(repo_file)?;
         let reader = io::BufReader::new(file);
         for line in reader.lines() {
             let line = line?;
-            match parse(&m2_repo_path, line) {
-                Ok(p) => jars.push(p),
-                Err(e) => println!("error = {e}"),
-            }
+            jars.push(parse(&m2_repo_path, line)?);
         }
     } // close file
     _copy_jar(jars, target_dir)?;
     Ok(())
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = Args::parse();
     
     // $HOME/.m2/repositoryが存在するか確認
@@ -124,5 +136,5 @@ fn main() {
         eprintln!("Error occured. error={e}");
         std::process::exit(1);
     }
-
+    Ok(())
 }
